@@ -4,12 +4,13 @@
 # Define the sources
 sourcesFvK =  \
 foeppl_von_karman_elements.cc \
- foeppl_von_karman_curved_bell_elements.cc
+foeppl_von_karman_curved_bell_elements.cc
 
 # Define the headers
 headersFvK =  \
 foeppl_von_karman.h \
-foeppl_von_karman_elements.h foeppl_von_karman_curved_bell_elements.h
+foeppl_von_karman_elements.h \
+foeppl_von_karman_curved_bell_elements.h
 
 # Define name of library
 libnameFvK = C1_foeppl_von_karman

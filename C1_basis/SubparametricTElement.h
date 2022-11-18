@@ -83,8 +83,9 @@ public:
  virtual unsigned ninternal_dofs() const = 0 ; 
 
  /// Get the itype th bubble dof at internal point ibdof
- virtual double get_bubble_dof(const unsigned ibdof, const unsigned
-   itype) const = 0;
+ virtual double get_bubble_dof(const unsigned ibdof,
+			       const unsigned itype,
+			       const unsigned t=0) const = 0;
 
  /// Get the basis for the  unknowns
  virtual void basis(const Vector<double>& s, Shape& nodal_basis, Shape& bubble_basis) const = 0;
@@ -450,7 +451,7 @@ to access interpolated eulerian coordinate",
 
  /// Get the bubble dof
  virtual double get_bubble_dof(const unsigned ibdof, const unsigned
-   itype) const 
+			       itype, const unsigned t = 0) const 
   {
   // Deliberately break this function for the below cases
   // If there is no curved edge then we cannot return anything meaningful
@@ -472,7 +473,7 @@ element.", OOMPH_CURRENT_FUNCTION, OOMPH_EXCEPTION_LOCATION);
   }
   // Now give the lth internal degree of freedom
   else
-   {return this->internal_data_pt(Index_of_internal_data)->value(ibdof);}
+   {return this->internal_data_pt(Index_of_internal_data)->value(t,ibdof);}
   }
 
 ///\short Get the jth bubble dof at the lth internal point. Deliberately broken 

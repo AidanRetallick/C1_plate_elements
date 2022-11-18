@@ -56,6 +56,10 @@ class FoepplVonKarmanEquations : public virtual FiniteElement
 
 public:
 
+ /// \short Function pointer to an alphaDT type swelling function fct(x,f(x)) --
+ /// x is a Vector!
+ typedef void (*SwellingFctPt)(const Vector<double>& x, double& f);
+
  /// \short Function pointer to pressure function fct(x,f(x)) --
  /// x is a Vector!
  typedef void (*PressureFctPt)(const Vector<double>& x, double& f);
@@ -214,51 +218,152 @@ const unsigned& boundary_number, const PressureFctPt& u)=0;
  void compute_error(std::ostream &outfile,
                     FiniteElement::UnsteadyExactSolutionFctPt exact_soln_pt,
                     const double& time, double& error, double& norm)
-  {
-   throw OomphLibError(
-    "There is no time-dependent compute_error() for these elements",
-    OOMPH_CURRENT_FUNCTION, OOMPH_EXCEPTION_LOCATION);
-  }
+ {
+  throw OomphLibError(
+		      "There is no time-dependent compute_error() for these elements",
+		      OOMPH_CURRENT_FUNCTION, OOMPH_EXCEPTION_LOCATION);
+ }
 
- /// Fill in the stress tensor
- void get_sigma(DenseMatrix<double>& sigma, const DenseMatrix<double>& grad_u,
-  const DenseMatrix<double>& grad_w )const
-  {
-   // Poisson ratio
-   double nu(get_nu());
-   // Truncated Green Lagrange strain tensor
-   DenseMatrix<double> epsilon(this->dim(),this->dim(),0.0);
-   for(unsigned alpha=0;alpha<this->dim();++alpha)
-    {
-     for(unsigned beta=0;beta<this->dim();++beta)
-      {
-       // Truncated Green Lagrange strain tensor
-       epsilon(alpha,beta) += 0.5* grad_u(alpha,beta) + 0.5*grad_u(beta,alpha)
-                           +0.5*grad_w(0,alpha)*grad_w(0,beta);
-      }
-    }
+ /// Fill in the strain tensor from displacement gradients
+ void get_epsilon(DenseMatrix<double>& epsilon,
+		  const DenseMatrix<double>& grad_u,
+		  const DenseMatrix<double>& grad_w,
+		  const double& c_swell)const
+ {
+  // Truncated Green Lagrange strain tensor
+  DenseMatrix<double> dummy_epsilon(this->dim(),this->dim(),0.0);
+  for(unsigned alpha=0;alpha<this->dim();++alpha)
+   {
+    for(unsigned beta=0;beta<this->dim();++beta)
+     {
+      // Truncated Green Lagrange strain tensor
+      dummy_epsilon(alpha,beta) += 0.5* grad_u(alpha,beta)
+       + 0.5*grad_u(beta,alpha)
+       + 0.5*grad_w(0,alpha)*grad_w(0,beta);
+     }
+    // Swelling slack
+    dummy_epsilon(alpha,alpha) -= c_swell;
+    
+   }
+  epsilon=dummy_epsilon;
+ }
+
+ /// Fill in the stress tensor from displacement gradients
+ void get_sigma(DenseMatrix<double>& sigma,
+		const DenseMatrix<double>& grad_u,
+		const DenseMatrix<double>& grad_w,
+		const double c_swell)const
+ {
+  // Get the Poisson ratio
+  double nu(get_nu());
+
+  // Truncated Green Lagrange strain tensor
+  DenseMatrix<double> epsilon(this->dim(),this->dim(),0.0);
+  get_epsilon(epsilon, grad_u, grad_w, c_swell);
    
-   // Now construct the Stress
-   for(unsigned alpha=0;alpha<this->dim();++alpha)
-    {
-     for(unsigned beta=0;beta<this->dim();++beta)
-      {
-       // The Laplacian term: Trace[ \epsilon ] I
-       // \nu * \epsilon_{\alpha \beta} delta_{\gamma \gamma}
-       sigma(alpha,alpha) += nu*epsilon(beta,beta)/(1-nu*nu);
+  // Now construct the Stress
+  for(unsigned alpha=0;alpha<this->dim();++alpha)
+   {
+    for(unsigned beta=0;beta<this->dim();++beta)
+     {
+      // The Laplacian term: Trace[ \epsilon ] I
+      // \nu * \epsilon_{\alpha \beta} delta_{\gamma \gamma}
+      sigma(alpha,alpha) += nu*epsilon(beta,beta)/(1-nu*nu);
       
-       // The scalar transform term: \epsilon
-       // (1-\nu) * \epsilon_{\alpha \beta}
-       sigma(alpha,beta) += (1-nu)* epsilon(alpha,beta)/(1-nu*nu);
-      }
-    }
- 
-  }
+      // The scalar transform term: \epsilon
+      // (1-\nu) * \epsilon_{\alpha \beta}
+      sigma(alpha,beta) += (1-nu)* epsilon(alpha,beta)/(1-nu*nu);
+     }
+   }
+ }
+
+ // TODO: Fix this function to use index loops
+ /// Fill in the stress tensor using a precalculated strain tensor
+ void get_sigma_from_epsilon(DenseMatrix<double>& sigma,
+			     const DenseMatrix<double>& epsilon)const
+ {
+  // Get the Poisson ratio
+  double nu(get_nu());
+   
+  // Now construct the Stress
+  sigma(0,0) = (epsilon(0,0) + nu*epsilon(1,1)) / (1.0 - nu*nu);
+  sigma(1,1) = (epsilon(1,1) + nu*epsilon(0,0)) / (1.0 - nu*nu);
+  sigma(0,1) = epsilon(0,1) / (1.0 + nu);
+  sigma(1,0) = sigma(0,1);
+ }
+
+ /// Get the principal stresses from the stress tensor
+ void get_principal_stresses(const DenseMatrix<double>& sigma,
+		Vector<double>& eigenvals,
+		DenseMatrix<double>& eigenvecs)const
+ {
+  // Ensure that our eigenvectors are the right size
+  eigenvals.resize(2);
+  eigenvecs.resize(2);
+  
+  // Store the axial and shear stresses
+  double s00 = sigma(0,0);
+  double s01 = sigma(0,1);
+  double s11 = sigma(1,1);
+
+  // Calculate the principal stress magnitudes
+  eigenvals[0] =
+   0.5 * ( (s00 + s11) + sqrt((s00+s11)*(s00+s11) - 4.0*(s00*s11-s01*s01)) );
+  eigenvals[1] =
+   0.5 * ( (s00 + s11) - sqrt((s00+s11)*(s00+s11) - 4.0*(s00*s11-s01*s01)) );
+
+  // Handle the shear free case
+  if(s01==0.0)
+   {
+    eigenvecs(0,0)=1.0;
+    eigenvecs(1,0)=0.0;
+    eigenvecs(0,1)=0.0;
+    eigenvecs(1,1)=1.0;
+   }
+  
+  else
+   {
+    // TODO: better (more general) sign choice for streamlines
+
+    // For max eval we choose y-positive evecs (suited to swelling sheet
+    // problem)
+    double sign = (eigenvals[0]-s00<0.0) ? -1.0 : 1.0;
+    // Calculate the normalised principal stress direction for eigenvals[0]
+    eigenvecs(0,0) =
+     sign * (s01 / sqrt(s01*s01 + (eigenvals[0]-s00)*(eigenvals[0]-s00)));
+    eigenvecs(1,0) =
+     sign * ((eigenvals[0]-s00) / sqrt(s01*s01 + (eigenvals[0]-s00)*(eigenvals[0]-s00)));
+
+    // For min eval we choose x-positive evecs (suited to swelling sheet
+    // problem)
+    sign = (s01<0.0) ? -1.0 : 1.0;
+    // Calculate the normalised principal stress direction for eigenvals[1]
+    eigenvecs(0,1) =
+     sign * (s01 / sqrt(s01*s01 + (eigenvals[1]-s00)*(eigenvals[1]-s00)));
+    eigenvecs(1,1) =
+     sign * ((eigenvals[1]-s00) / sqrt(s01*s01 + (eigenvals[1]-s00)*(eigenvals[1]-s00)));
+   }
+ }
+
  /// Access function: Pointer to pressure function
  PressureFctPt& pressure_fct_pt() {return Pressure_fct_pt;}
 
  /// Access function: Pointer to pressure function. Const version
  PressureFctPt pressure_fct_pt() const {return Pressure_fct_pt;}
+
+ /// Access function: Pointer to in plane forcing function
+ InPlaneForcingFctPt& in_plane_forcing_fct_pt()
+  {return In_plane_forcing_fct_pt;}
+
+ /// Access function: Pointer to in plane forcing function. Const version
+ InPlaneForcingFctPt in_plane_forcing_fct_pt() const
+  {return In_plane_forcing_fct_pt;}
+
+ /// Access function: Pointer to swelling function
+ SwellingFctPt& swelling_fct_pt() {return Swelling_fct_pt;}
+
+ /// Access function: Pointer to swelling function. Const version
+ SwellingFctPt swelling_fct_pt() const {return Swelling_fct_pt;}
 
  /// Access function: Pointer to error metric function
  ErrorMetricFctPt& error_metric_fct_pt() {return Error_metric_fct_pt;}
@@ -274,22 +379,22 @@ const unsigned& boundary_number, const PressureFctPt& u)=0;
  MultipleErrorMetricFctPt multiple_error_metric_fct_pt() const 
   {return Multiple_error_metric_fct_pt;}
 
- /// Access function: Pointer to in plane forcing function
- InPlaneForcingFctPt& in_plane_forcing_fct_pt()
-  {return In_plane_forcing_fct_pt;}
-
- /// Access function: Pointer to in plane forcing function. Const version
- InPlaneForcingFctPt in_plane_forcing_fct_pt() const
-  {return In_plane_forcing_fct_pt;}
-
  ///Access function to the Poisson ratio.
  const double*& nu_pt() {return Nu_pt;}
 
  ///Access function to the Poisson ratio (const version)
  const double& get_nu() const {return *Nu_pt;}
 
- /// Get the kth dof type at internal point l
- virtual double get_w_bubble_dof(const unsigned& l, const unsigned& k) const =0;
+ ///Access function to the dampening coefficient.
+ const double*& mu_pt() {return Mu_pt;}
+
+ ///Access function to the dampening coefficient (const version)
+ const double& get_mu() const {return *Mu_pt;}
+
+ /// Get the kth dof type at internal point l at time t(=0)
+ virtual double get_w_bubble_dof(const unsigned& l,
+				 const unsigned& k,
+				 const unsigned& t = 0) const =0;
 
  /// Get the kth equation at internal point l
  virtual int local_w_bubble_equation(const unsigned& l, const unsigned& k)
@@ -338,6 +443,28 @@ const unsigned& boundary_number, const PressureFctPt& u)=0;
     }
   }
 
+ /// Get swelling at (Eulerian) position x. This function is
+ /// virtual to allow overloading.
+ inline virtual void get_swelling_foeppl_von_karman(const unsigned& ipt,
+                                        const Vector<double>& x,
+                                        double& swelling) const
+  {
+   //If no swelling function has been set, return zero
+   if(Swelling_fct_pt==0)
+    {
+     swelling = 0.0;
+    }
+   else
+    {
+     // Get swelling magnitude
+     (*Swelling_fct_pt)(x,swelling);
+    }
+  }
+ 
+ /// \short Calculate the elastic energy of the element and return it as a
+ /// double.
+ virtual Vector<double> element_elastic_and_kinetic_energy();
+
  /// Add the element's contribution to its residual vector (wrapper)
  void fill_in_contribution_to_residuals(Vector<double> &residuals)
   {
@@ -376,7 +503,86 @@ const unsigned& boundary_number, const PressureFctPt& u)=0;
     }
   }
 
+ /// \short Return FE representation of dw/dt at local coordinate s
+ virtual inline Vector<double> interpolated_dwdt_foeppl_von_karman(const Vector<double>& s) const
+ {
+  //Find out how many nodes positional dofs there are
+  unsigned n_basis_type = nnodal_basis_type();
+  // Find the internal dofs
+  const unsigned n_b_position_type = nbubble_basis_type();
+  //Find out how many nodes there are
+  const unsigned n_w_node = nnode_outofplane();
+  //Find out how many internal points there are
+  const unsigned n_b_node = nbubble_basis();
+  //Get the index at which the unknown is stored
+  const unsigned w_nodal_index = w_nodal_index_foeppl_von_karman();
+  //Get the index at which the unknown is stored
+  const unsigned w_bubble_index = 1; //_foeppl_von_karman();
+  // ^^^ THIS NEEDS TO BE FIXED, NOT GENERAL ENOUGH.
+  // (1) should be changed to right index
+  
+  //Local c1-shape funtion
+  Shape psi(n_w_node,n_basis_type),test(n_w_node,n_basis_type),
+   psi_b(n_b_node,n_b_position_type),test_b(n_b_node,n_b_position_type);
+  
+  //Calculate values of unknown
+  Vector<double> interpolated_w(1,0.0);
+  Vector<double> interpolated_dwdt(1,0.0);
+    
+  //Call the derivatives of the shape and test functions for the unknown
+  shape_and_test_foeppl_von_karman(s,
+				   psi, psi_b,
+				   test, test_b);
 
+  // Loop over nodes
+  for(unsigned l=0;l<n_w_node;l++)
+   {
+    TimeStepper* timestepper_pt = this->node_pt(l)->time_stepper_pt();
+    unsigned n_time = 0;
+    if( !(timestepper_pt->is_steady()) )
+     {
+      n_time=timestepper_pt->ntstorage();
+     }
+    for(unsigned k=0;k<n_basis_type;k++)
+     {
+      // Add the contributions to the time derivative from node l, type k
+      double dwdt_value = 0.0;
+      for(unsigned t=0; t<n_time; t++)
+       {
+	dwdt_value +=
+	 timestepper_pt->weight(1,t)
+	 * this->raw_nodal_value(t, l, w_nodal_index+k);
+       }
+      interpolated_dwdt[0] += dwdt_value * psi(l,k);
+     }
+   }
+
+  // Loop over internal dofs
+  for(unsigned l=0;l<nbubble_basis();l++)
+   {
+    TimeStepper* timestepper_pt = internal_data_pt(w_bubble_index) // :(
+     ->time_stepper_pt();
+    unsigned n_time = 0;
+    if( !(timestepper_pt->is_steady()) )
+     {
+      n_time=timestepper_pt->ntstorage();
+     }
+    for(unsigned k=0;k<n_b_position_type;k++)
+     {
+      // Add the contributions to the time derivative
+      double dwdt_value = 0.0;
+      for(unsigned t=0; t<n_time; t++)
+       {
+	dwdt_value +=
+	 timestepper_pt->weight(1,t) * get_w_bubble_dof(l,k,t);
+       }
+      interpolated_dwdt[0] += dwdt_value * psi_b(l,k);
+     }
+   }
+  // Finally return the (single valued) vector of interpolated velocity.
+  return interpolated_dwdt;
+ }
+ 
  /// \short Return FE representation of unknown values u(s)
  /// at local coordinate s
  virtual inline Vector<double> interpolated_u_foeppl_von_karman(const Vector<double> &s) const
@@ -387,7 +593,7 @@ const unsigned& boundary_number, const PressureFctPt& u)=0;
    const unsigned n_b_position_type = nbubble_basis_type();
    //Find out how many nodes there are
    const unsigned n_w_node = nnode_outofplane();
-  //Find out how many nodes there are
+   //Find out how many nodes there are
    const unsigned n_u_node = nnode_inplane();
    //Find out how many internal points there are
    const unsigned n_b_node = nbubble_basis();
@@ -415,8 +621,8 @@ const unsigned& boundary_number, const PressureFctPt& u)=0;
    Shape test_u(n_u_node);
    DShape dtest_u(n_u_node,this->dim());
 
-   // Number of in-plane displacement fields is equal to dimension
-   const unsigned n_u_fields = 2;// DIM;
+   // Number of in-plane displacement fields is equal to dim + dim^2
+   const unsigned n_u_fields = 6;// DIM;
    // Number of out-of-plane displacement fields is equal 1 (value of deflection_
    // plus first and second deriv
    const unsigned n_w_fields = 6;//1+DIM+n_second_deriv;
@@ -450,7 +656,7 @@ const unsigned& boundary_number, const PressureFctPt& u)=0;
 
    // Bubble dofs
    for(unsigned l=0;l<nbubble_basis();l++)
-   {
+    {
     for(unsigned k=0;k<nbubble_basis_type();k++)
      {
       double u_value = get_w_bubble_dof(l,w_bubble_index+k);
@@ -460,24 +666,24 @@ const unsigned& boundary_number, const PressureFctPt& u)=0;
       for(unsigned alpha=0;alpha<this->dim();++alpha)
        { interpolated_u[1+alpha] += u_value*dpsi_b_dxi(l,w_bubble_index+k,alpha); }
       // d2_u_3_dx_alpha dx_beta
-     for(unsigned alphabeta=0;alphabeta<n_second_deriv;++alphabeta)
-      {
-       interpolated_u[this->dim()+1+alphabeta] += u_value*d2psi_b_dxi2(l,w_bubble_index+k,alphabeta);
-      }
+      for(unsigned alphabeta=0;alphabeta<n_second_deriv;++alphabeta)
+       {
+	interpolated_u[this->dim()+1+alphabeta] += u_value*d2psi_b_dxi2(l,w_bubble_index+k,alphabeta);
+       }
      }
-   }
+    }
    // Now for the displacement 
    for(unsigned l=0; l< n_u_node;++l)
     {
      // Now for the two in--plane displacements
      interpolated_u[6] += this->nodal_value(l,u_nodal_index+0)*psi_u(l);
      interpolated_u[7] += this->nodal_value(l,u_nodal_index+1)*psi_u(l);
-    // // Also output the in--plane displacement derivatives
-    // for(unsigned i=0; i<this->dim(); ++i)
-    //  {
-    //  interpolated_u[8 +i] += this->nodal_value(l,u_nodal_index+0)*dpsi_u(l,i);
-    //  interpolated_u[10+i] += this->nodal_value(l,u_nodal_index+1)*dpsi_u(l,i);
-    //  }
+     // Also output the in--plane displacement derivatives
+     for(unsigned i=0; i<this->dim(); ++i)
+      {
+       interpolated_u[8 +i] += this->nodal_value(l,u_nodal_index+0)*dpsi_u(l,i);
+       interpolated_u[10+i] += this->nodal_value(l,u_nodal_index+1)*dpsi_u(l,i);
+      }
     }
    return(interpolated_u);
   }
@@ -523,15 +729,24 @@ protected:
  /// Pointer to in plane forcing function (i.e. the shear force applied to
  /// the face)
  InPlaneForcingFctPt In_plane_forcing_fct_pt;
+ 
+ /// Pointer to swelling function:
+ SwellingFctPt Swelling_fct_pt; 
 
  /// Pointer to Poisson ratio, which this element cannot modify
  const double* Nu_pt;
+
+ /// Pointer to the dampening coefficient, which this element cannot modify
+ const double* Mu_pt;
 
  /// Pointer to global eta
  const double *Eta_pt;
 
  /// Default value for physical constant: Poisson ratio. 
  static const double Default_Nu_Value;
+
+ /// Default value for constant: dampening coefficient. 
+ static const double Default_Mu_Value;
 
  /// Default eta value so that we use 'natural' nondim and have no h dependence. 
  static const double Default_Eta_Value;
